@@ -1,0 +1,17 @@
+{
+  "name": "cpp-pi-tflite-dev",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "postCreateCommand": "bash .devcontainer/init.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-python.python"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}

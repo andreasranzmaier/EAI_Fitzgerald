@@ -1,0 +1,56 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "train-model",
+      "type": "shell",
+      "command": "make train",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "prepare-tflite-source",
+      "type": "shell",
+      "command": "make tflite",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "provision-pi",
+      "type": "shell",
+      "command": "make provision-pi",
+      "problemMatcher": []
+    },
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "make build",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "deploy",
+      "type": "shell",
+      "command": "make deploy",
+      "problemMatcher": []
+    },
+    {
+      "label": "console",
+      "type": "shell",
+      "command": "make console",
+      "problemMatcher": []
+    },
+    {
+      "label": "all",
+      "type": "shell",
+      "command": "make all",
+      "problemMatcher": []
+    },
+    {
+      "label": "perf",
+      "type": "shell",
+      "command": "make perf",
+      "problemMatcher": []
+    }
+  ]
+}
