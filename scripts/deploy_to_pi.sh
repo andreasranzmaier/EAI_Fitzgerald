@@ -32,6 +32,20 @@ if [[ -f "${ARTIFACT_DIR}/test_digit.bmp" ]]; then
 fi
 shopt -u nullglob
 
+# Exercise 04: Part 6 (?)
+shopt -s nullglob
+ARTIFACT_FILES=("${ARTIFACT_DIR}"/*.tflite)
+shopt -u nullglob
+
+# Exercise 04: Part 1
+if [[ -f "${ARTIFACT_DIR}/2026-04-15_16-11-01_gesture_A_resampled.csv" ]]; then
+  ARTIFACT_FILES+=("${ARTIFACT_DIR}/2026-04-15_16-11-01_gesture_A_resampled.csv")
+fi
+
+if [[ -f "${ARTIFACT_DIR}/2026-05-05_18-44-37_gesture_C_resampled.csv" ]]; then
+  ARTIFACT_FILES+=("${ARTIFACT_DIR}/2026-05-05_18-44-37_gesture_C_resampled.csv")
+fi
+
 if (( ${#ARTIFACT_FILES[@]} == 0 )); then
   echo "Missing converted models in ${ARTIFACT_DIR}. Run make train first." >&2
   exit 1
