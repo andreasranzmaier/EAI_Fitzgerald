@@ -6,3 +6,4 @@ third_party/
 .vscode/settings.json
 __pycache__/
 *.pyc
+data/

@@ -1,2 +1,4 @@
 tensorflow==2.16.1
+tf-keras==2.16.*
 numpy==1.26.4
+tensorflow-model-optimization==0.8.0

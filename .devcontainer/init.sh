@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Strict mode; enable `pipefail` when supported, otherwise fall back.
+set -euo pipefail 2>/dev/null || set -eu
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
