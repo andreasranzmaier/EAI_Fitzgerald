@@ -19,16 +19,9 @@ PROGRAM_PATTERNS = {
 }
 
 IMPORTANT_EVENTS = [
-    "task-clock",
     "cycles",
     "instructions",
     "branches",
-    "branch-misses",
-    "cache-references",
-    "cache-misses",
-    "context-switches",
-    "cpu-migrations",
-    "page-faults",
 ]
 
 
@@ -84,7 +77,7 @@ def load_training_metrics(path: Path) -> dict[str, dict[str, str]]:
     if not path.exists():
         return {}
     with path.open(newline="", encoding="utf-8") as input_file:
-        return {row["model"]: row for row in csv.DictReader(input_file)}
+        return {row["tflite_file"]: row for row in csv.DictReader(input_file)}
 
 
 def safe_mean(values: list[float]) -> float | None:

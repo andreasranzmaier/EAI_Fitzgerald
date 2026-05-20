@@ -16,7 +16,6 @@ set +a
 : "${PI_REMOTE_MODEL:=model.tflite}"
 : "${PI_RUN_ARGS:=${PI_REMOTE_MODEL}}"
 : "${PI_TMUX_SESSION:=pi_debug}"
-: "${PI_SSH_PORT:=22}"
 
 LOCAL_BIN="${BUILD_DIR}/${APP_NAME}"
 REMOTE_BIN="${PI_REMOTE_DIR}/${PI_REMOTE_BIN}"
@@ -38,11 +37,11 @@ if (( ${#ARTIFACT_FILES[@]} == 0 )); then
   exit 1
 fi
 
-ssh -p "$PI_SSH_PORT" "$PI_USER@$PI_HOST" "mkdir -p '$PI_REMOTE_DIR'"
-rsync -az -e "ssh -p $PI_SSH_PORT" "$LOCAL_BIN" "$PI_USER@$PI_HOST:$REMOTE_BIN"
-rsync -az -e "ssh -p $PI_SSH_PORT" "${ARTIFACT_FILES[@]}" "$PI_USER@$PI_HOST:$PI_REMOTE_DIR/"
+ssh "$PI_USER@$PI_HOST" "mkdir -p '$PI_REMOTE_DIR'"
+rsync -az "$LOCAL_BIN" "$PI_USER@$PI_HOST:$REMOTE_BIN"
+rsync -az "${ARTIFACT_FILES[@]}" "$PI_USER@$PI_HOST:$PI_REMOTE_DIR/"
 
-ssh -p "$PI_SSH_PORT" "$PI_USER@$PI_HOST" <<EOF_REMOTE
+ssh "$PI_USER@$PI_HOST" <<EOF_REMOTE
 set -e
 pkill -x "$PI_REMOTE_BIN" || true
 pkill -x gdbserver || true

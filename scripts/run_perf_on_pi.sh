@@ -15,13 +15,16 @@ set +a
 : "${PI_TMUX_SESSION:=pi_debug}"
 : "${PI_TEST_IMAGE:=test_digit.bmp}"
 # UE8: Default perf run includes pruning plus the minimal quantization variants.
-: "${PI_MODEL_LIST:=baseline.tflite synapse_pruned.tflite neuron_pruned.tflite channel_pruned.tflite baseline_int8.tflite}"
-: "${PI_BENCHMARK_RUNS:=100}"
+# UE9: Update with kmeans and variable k
+: "${KMEANS_K:=16}"
+: "${PI_MODEL_LIST:=baseline.tflite baseline_fp16.tflite baseline_int8.tflite synapse_pruned.tflite neuron_pruned.tflite channel_pruned.tflite kmeans_k${KMEANS_K}.tflite synapse_pruned_kmeans_k${KMEANS_K}_int8.tflite neuron_pruned_kmeans_k${KMEANS_K}_int8.tflite channel_pruned_kmeans_k${KMEANS_K}_int8.tflite}"
+: "${PI_BENCHMARK_RUNS:=1000}"
 : "${PI_BENCHMARK_WARMUP:=20}"
-: "${PI_PERF_REPEAT:=3}"
+: "${PI_PERF_REPEAT:=5}"
 : "${PI_PERF_SUDO:=0}"
-: "${PI_PERF_EVENTS:=task-clock,cycles,instructions,branches,branch-misses,cache-references,cache-misses,context-switches,cpu-migrations,page-faults}"
-: "${PI_SSH_PORT:=22}"
+# UE9: We reduce the important perf events
+#: "${PI_PERF_EVENTS:=task-clock,cycles,instructions,branches,branch-misses,cache-references,cache-misses,context-switches,cpu-migrations,page-faults}"
+: "${PI_PERF_EVENTS:=cycles,instructions,branches}"
 
 if (( $# > 0 )); then
   MODELS=("$@")
@@ -33,7 +36,7 @@ LOCAL_PERF_DIR="${ARTIFACT_DIR}/perf"
 REMOTE_PERF_DIR="${PI_REMOTE_DIR}/perf_results"
 mkdir -p "$LOCAL_PERF_DIR"
 
-ssh -p "$PI_SSH_PORT" "$PI_USER@$PI_HOST" bash -s -- \
+ssh "$PI_USER@$PI_HOST" bash -s -- \
   "$PI_REMOTE_DIR" \
   "$PI_REMOTE_BIN" \
   "$PI_TMUX_SESSION" \
@@ -116,7 +119,7 @@ for model in "${MODELS[@]}"; do
 done
 EOF_REMOTE
 
-rsync -az -e "ssh -p $PI_SSH_PORT" "$PI_USER@$PI_HOST:$REMOTE_PERF_DIR/" "$LOCAL_PERF_DIR/"
+rsync -az "$PI_USER@$PI_HOST:$REMOTE_PERF_DIR/" "$LOCAL_PERF_DIR/"
 "${PYTHON_BIN:-python3}" scripts/parse_perf_results.py \
   --input-dir "$LOCAL_PERF_DIR" \
   --model-metrics "${ARTIFACT_DIR}/model_metrics.csv" \

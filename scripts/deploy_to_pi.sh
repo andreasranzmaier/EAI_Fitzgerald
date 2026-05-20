@@ -16,7 +16,6 @@ set +a
 : "${PI_REMOTE_MODEL:=model.tflite}"
 : "${PI_PORT:=2345}"
 : "${PI_TMUX_SESSION:=pi_debug}"
-: "${PI_SSH_PORT:=22}"
 
 LOCAL_BIN="${BUILD_DIR}/${APP_NAME}"
 REMOTE_BIN="${PI_REMOTE_DIR}/${PI_REMOTE_BIN}"
@@ -38,17 +37,17 @@ if (( ${#ARTIFACT_FILES[@]} == 0 )); then
   exit 1
 fi
 
-ssh -p "$PI_SSH_PORT" "$PI_USER@$PI_HOST" "mkdir -p '$PI_REMOTE_DIR'"
+ssh "$PI_USER@$PI_HOST" "mkdir -p '$PI_REMOTE_DIR'"
 
 BIN_CHANGES="$(mktemp)"
 ARTIFACT_CHANGES="$(mktemp)"
 trap 'rm -f "$BIN_CHANGES" "$ARTIFACT_CHANGES"' EXIT
 
-rsync -azc -e "ssh -p $PI_SSH_PORT" --itemize-changes "$LOCAL_BIN" "$PI_USER@$PI_HOST:$REMOTE_BIN" | tee "$BIN_CHANGES"
-rsync -azc -e "ssh -p $PI_SSH_PORT" --itemize-changes "${ARTIFACT_FILES[@]}" "$PI_USER@$PI_HOST:$PI_REMOTE_DIR/" | tee "$ARTIFACT_CHANGES"
+rsync -azc --itemize-changes "$LOCAL_BIN" "$PI_USER@$PI_HOST:$REMOTE_BIN" | tee "$BIN_CHANGES"
+rsync -azc --itemize-changes "${ARTIFACT_FILES[@]}" "$PI_USER@$PI_HOST:$PI_REMOTE_DIR/" | tee "$ARTIFACT_CHANGES"
 
 REMOTE_RUNNING=0
-if ssh -p "$PI_SSH_PORT" "$PI_USER@$PI_HOST" "tmux has-session -t '$PI_TMUX_SESSION' 2>/dev/null && pgrep -x gdbserver >/dev/null"; then
+if ssh "$PI_USER@$PI_HOST" "tmux has-session -t '$PI_TMUX_SESSION' 2>/dev/null && pgrep -x gdbserver >/dev/null"; then
   REMOTE_RUNNING=1
 fi
 
@@ -57,7 +56,7 @@ if [[ ! -s "$BIN_CHANGES" && ! -s "$ARTIFACT_CHANGES" && "$REMOTE_RUNNING" -eq 1
   exit 0
 fi
 
-ssh -p "$PI_SSH_PORT" "$PI_USER@$PI_HOST" <<EOF_REMOTE
+ssh "$PI_USER@$PI_HOST" <<EOF_REMOTE
 set -e
 
 pkill -x "$PI_REMOTE_BIN" || true
