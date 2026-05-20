@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(APP_NAME "mnist_sensehat_demo" CACHE STRING "Application target name")
+set(APP_NAME "gesture_sensehat_demo" CACHE STRING "Application target name")
 project(${APP_NAME} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)

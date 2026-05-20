@@ -4,7 +4,7 @@ MAKEFLAGS += --no-builtin-rules
 
 -include .env
 
-APP_NAME ?= mnist_sensehat_demo
+APP_NAME ?= gesture_sensehat_demo
 ARTIFACT_DIR ?= artifacts
 BUILD_DIR ?= build
 BUILD_JOBS ?= $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)

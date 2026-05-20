@@ -7,13 +7,22 @@ import math
 import os
 from pathlib import Path
 import shutil
-import struct
+import sys
 from typing import Any, Iterator
 
 os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 
 import numpy as np
 import tensorflow as tf
+from sklearn.model_selection import train_test_split
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from resampler import load_gesture_sequences
+
+# Model input constants — must match tflite_gesture_classifier.h
+kTimesteps = 50
+kFeatureCount = 9
+kNumClasses = 4
 
 
 def require_tfmot():
@@ -41,211 +50,173 @@ def require_tfmot():
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train one MNIST model and export baseline, pruning and quantization variants."
+        description="Train a gesture CNN and export baseline, pruning and quantization variants."
     )
     parser.add_argument("--artifacts-dir", default="artifacts")
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--finetune-epochs", type=int, default=1)
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--finetune-epochs", type=int, default=5)
     parser.add_argument("--cluster-finetune-epochs", type=int, default=0)
-    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--conv-filters", type=int, default=16)
-    parser.add_argument("--dense-units", type=int, default=64)
+    parser.add_argument("--dense-units", type=int, default=32)
     parser.add_argument("--synapse-prune-ratio", type=float, default=0.70)
     parser.add_argument("--neuron-prune-ratio", type=float, default=0.50)
     parser.add_argument("--channel-prune-ratio", type=float, default=0.50)
-    parser.add_argument("--validation-split", type=float, default=0.20)
+    parser.add_argument("--validation-split", type=float, default=0.15)
     parser.add_argument("--kmeans-k", type=int, default=16)
-    parser.add_argument("--kmeans-iters", type=int, default=20, help=argparse.SUPPRESS)
     parser.add_argument("--representative-samples", type=int, default=256)
     parser.add_argument("--tflite-eval-samples", type=int, default=0)
-    parser.add_argument("--test-digit-index", type=int, default=0)
     return parser.parse_args()
 
 
-def load_data() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-    return (
-        x_train.astype("float32")[..., None] / 255.0,
-        y_train,
-        x_test.astype("float32")[..., None] / 255.0,
-        y_test,
-    )
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def load_data(data_dir: str) -> tuple[np.ndarray, np.ndarray]:
+    X, y = load_gesture_sequences(data_dir, num_points=kTimesteps)
+    return X.astype(np.float32), y.astype(np.int32)
 
 
-def split_train_validation(
-    x_train: np.ndarray,
-    y_train: np.ndarray,
+def split_data(
+    X: np.ndarray,
+    y: np.ndarray,
     validation_split: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    split = float(np.clip(validation_split, 0.0, 0.50))
-    validation_count = int(round(len(x_train) * split))
-    validation_count = max(1, validation_count) if split > 0.0 else 0
-    if validation_count == 0:
-        return x_train, y_train, x_train[:0], y_train[:0]
-    return (
-        x_train[:-validation_count],
-        y_train[:-validation_count],
-        x_train[-validation_count:],
-        y_train[-validation_count:],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    X_train, X_tmp, y_train, y_tmp = train_test_split(
+        X, y, test_size=validation_split * 2, random_state=42, stratify=y
     )
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_tmp, y_tmp, test_size=0.50, random_state=42, stratify=y_tmp
+    )
+    return X_train, y_train, X_val, y_val, X_test, y_test
 
+
+# ---------------------------------------------------------------------------
+# Model construction
+# ---------------------------------------------------------------------------
 
 def compile_for_classification(model: tf.keras.Model) -> None:
     model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
 
 
+def make_adapted_norm(norm_weights: list[np.ndarray]) -> tf.keras.layers.Layer:
+    """Reconstruct a Normalization layer from stored adapt weights."""
+    layer = tf.keras.layers.Normalization(axis=-1)
+    layer(tf.zeros((1, kTimesteps, kFeatureCount), dtype=tf.float32))
+    layer.set_weights(norm_weights)
+    layer.trainable = False
+    return layer
+
+
 def make_model(
-    conv1_filters: int = 16,
-    conv2_filters: int = 32,
-    dense1_units: int = 32,
-    dense2_units: int = 16,
+    norm_layer: tf.keras.layers.Layer,
+    conv_filters: int = 16,
+    dense_units: int = 32,
 ) -> tf.keras.Model:
-    model = tf.keras.Sequential(
-        [
-		#ToDo: Create a bigger model
-        tf.keras.layers.Input(shape=(28,28,1), name="image"),
-        tf.keras.layers.Conv2D(conv1_filters, 3, activation="relu", name="conv1"),
-        tf.keras.layers.MaxPooling2D(name="pool1"),
-        tf.keras.layers.Conv2D(conv2_filters, 3, activation="relu", name="conv2"),
-        tf.keras.layers.MaxPooling2D(name="pool2"),
-        tf.keras.layers.Flatten(name="flatten"),
-        tf.keras.layers.Dense(dense1_units, activation="relu", name="hidden1"),
-        tf.keras.layers.Dense(dense2_units, activation="relu", name="hidden2"),
-        tf.keras.layers.Dense(10, activation="softmax", name="output"),
-        ]
-    )
+    model = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(kTimesteps, kFeatureCount)),
+        norm_layer,
+        tf.keras.layers.Conv1D(conv_filters, 3, activation="relu", name="conv"),
+        tf.keras.layers.GlobalAveragePooling1D(name="gap"),
+        tf.keras.layers.Dense(dense_units, activation="relu", name="dense1"),
+        tf.keras.layers.Dropout(0.3, name="dropout"),
+        tf.keras.layers.Dense(kNumClasses, activation="softmax", name="output"),
+    ])
     compile_for_classification(model)
     return model
 
 
-def clone_with_weights(base_model: tf.keras.Model, weights: list[np.ndarray]) -> tf.keras.Model:
-    model = tf.keras.models.clone_model(base_model)
-    model.set_weights(weights)
-    compile_for_classification(model)
-    return model
-
-
-def prune_synapses(base_model: tf.keras.Model, prune_ratio: float) -> tf.keras.Model:
-    model = tf.keras.models.clone_model(base_model)
-    model.set_weights(base_model.get_weights())
-    compile_for_classification(model)
-
-    kernels = [np.abs(weights[0]).reshape(-1) for weights in (layer.get_weights() for layer in model.layers) if weights]
-    threshold = np.percentile(np.concatenate(kernels), prune_ratio * 100.0)
-
-    for layer in model.layers:
-        weights = layer.get_weights()
-        if weights:
-            weights[0][np.abs(weights[0]) <= threshold] = 0.0
-            layer.set_weights(weights)
-    return model
-
+# ---------------------------------------------------------------------------
+# Pruning
+# ---------------------------------------------------------------------------
 
 def keep_count(total: int, prune_ratio: float) -> int:
     ratio = float(np.clip(prune_ratio, 0.0, 0.95))
     return max(1, min(total, int(round(total * (1.0 - ratio)))))
 
 
-def prune_neurons(
-    base_model: tf.keras.Model,
-    prune_ratio: float,
-    prune_hidden1: bool = True,
-    prune_hidden2: bool = True,
-) -> tf.keras.Model:
-    conv1 = base_model.get_layer("conv1")
-    conv2 = base_model.get_layer("conv2")
-    hidden1 = base_model.get_layer("hidden1")
-    hidden2 = base_model.get_layer("hidden2")
-    output = base_model.get_layer("output")
-    h1_kernel, h1_bias = hidden1.get_weights()
-    h2_kernel, h2_bias = hidden2.get_weights()
-    out_kernel, out_bias = output.get_weights()
+def prune_synapses(base_model: tf.keras.Model, prune_ratio: float) -> tf.keras.Model:
+    # clone_model preserves Normalization layer stats via get_config().
+    model = tf.keras.models.clone_model(base_model)
+    model.set_weights(base_model.get_weights())
+    compile_for_classification(model)
 
-    if prune_hidden1:
-        scores = np.sum(np.abs(h1_kernel), axis=0) + np.sum(np.abs(h2_kernel), axis=1)
-        keep = np.sort(np.argsort(scores)[-keep_count(h1_kernel.shape[1], prune_ratio):])
-        h1_kernel = h1_kernel[:, keep]
-        h1_bias = h1_bias[keep]
-        h2_kernel = h2_kernel[keep, :]
+    # Only prune layers with trainable kernels; skip Normalization/Dropout/GAP.
+    kernels = [
+        np.abs(layer.kernel.numpy()).reshape(-1)
+        for layer in model.layers
+        if getattr(layer, "kernel", None) is not None
+    ]
+    if not kernels:
+        return model
+    threshold = np.percentile(np.concatenate(kernels), prune_ratio * 100.0)
 
-    if prune_hidden2:
-        scores = np.sum(np.abs(h2_kernel), axis=0) + np.sum(np.abs(out_kernel), axis=1)
-        keep = np.sort(np.argsort(scores)[-keep_count(h2_kernel.shape[1], prune_ratio):])
-        h2_kernel = h2_kernel[:, keep]
-        h2_bias = h2_bias[keep]
-        out_kernel = out_kernel[keep, :]
-
-    model = make_model(
-        conv1_filters=conv1.filters,
-        conv2_filters=conv2.filters,
-        dense1_units=h1_kernel.shape[1],
-        dense2_units=h2_kernel.shape[1],
-    )
-    model(tf.zeros((1, 28, 28, 1)))
-    model.get_layer("conv1").set_weights(conv1.get_weights())
-    model.get_layer("conv2").set_weights(conv2.get_weights())
-    model.get_layer("hidden1").set_weights([h1_kernel, h1_bias])
-    model.get_layer("hidden2").set_weights([h2_kernel, h2_bias])
-    model.get_layer("output").set_weights([out_kernel, out_bias])
+    for layer in model.layers:
+        if getattr(layer, "kernel", None) is not None:
+            weights = layer.get_weights()
+            weights[0][np.abs(weights[0]) <= threshold] = 0.0
+            layer.set_weights(weights)
     return model
 
 
-def rows_for_channels(channels: np.ndarray, old_channels: int, pooled_side: int) -> np.ndarray:
-    rows: list[int] = []
-    for y in range(pooled_side):
-        for x in range(pooled_side):
-            for channel in channels:
-                rows.append((y * pooled_side + x) * old_channels + int(channel))
-    return np.array(rows, dtype=np.int64)
+def prune_neurons(
+    base_model: tf.keras.Model,
+    prune_ratio: float,
+    norm_weights: list[np.ndarray],
+) -> tf.keras.Model:
+    """Remove the least-important neurons from dense1."""
+    conv = base_model.get_layer("conv")
+    dense1 = base_model.get_layer("dense1")
+    output = base_model.get_layer("output")
+
+    d1_kernel, d1_bias = dense1.get_weights()
+    out_kernel, out_bias = output.get_weights()
+
+    scores = np.sum(np.abs(d1_kernel), axis=0) + np.sum(np.abs(out_kernel), axis=1)
+    keep = np.sort(np.argsort(scores)[-keep_count(d1_kernel.shape[1], prune_ratio):])
+
+    d1_kernel = d1_kernel[:, keep]
+    d1_bias = d1_bias[keep]
+    out_kernel = out_kernel[keep, :]
+
+    model = make_model(make_adapted_norm(norm_weights), conv.filters, len(keep))
+    model(tf.zeros((1, kTimesteps, kFeatureCount)))
+    model.get_layer("conv").set_weights(conv.get_weights())
+    model.get_layer("dense1").set_weights([d1_kernel, d1_bias])
+    model.get_layer("output").set_weights([out_kernel, out_bias])
+    return model
 
 
 def prune_channels(
     base_model: tf.keras.Model,
     prune_ratio: float,
-    prune_conv1: bool = True,
-    prune_conv2: bool = True,
+    norm_weights: list[np.ndarray],
 ) -> tf.keras.Model:
-    conv1 = base_model.get_layer("conv1")
-    conv2 = base_model.get_layer("conv2")
-    hidden1 = base_model.get_layer("hidden1")
-    hidden2 = base_model.get_layer("hidden2")
+    """Remove the least-important Conv1D filters."""
+    conv = base_model.get_layer("conv")
+    dense1 = base_model.get_layer("dense1")
     output = base_model.get_layer("output")
 
-    conv1_kernel, conv1_bias = conv1.get_weights()
-    conv2_kernel, conv2_bias = conv2.get_weights()
-    hidden1_kernel, hidden1_bias = hidden1.get_weights()
-    old_conv2_channels = conv2_kernel.shape[3]
+    conv_kernel, conv_bias = conv.get_weights()  # (kernel_size, in_features, filters)
+    d1_kernel, d1_bias = dense1.get_weights()    # (filters, dense_units)
 
-    if prune_conv1:
-        scores = np.sum(np.abs(conv1_kernel), axis=(0, 1, 2)) + np.sum(np.abs(conv2_kernel), axis=(0, 1, 3))
-        keep = np.sort(np.argsort(scores)[-keep_count(conv1_kernel.shape[3], prune_ratio):])
-        conv1_kernel = conv1_kernel[:, :, :, keep]
-        conv1_bias = conv1_bias[keep]
-        conv2_kernel = conv2_kernel[:, :, keep, :]
+    # Score each filter by combined kernel + downstream dense weight magnitude.
+    conv_scores = np.sum(np.abs(conv_kernel), axis=(0, 1))  # (filters,)
+    d1_scores = np.sum(np.abs(d1_kernel), axis=1)            # (filters,)
+    scores = conv_scores + d1_scores
 
-    if prune_conv2:
-        pooled_side = 5
-        conv_scores = np.sum(np.abs(conv2_kernel), axis=(0, 1, 2))
-        hidden_scores = np.sum(
-            np.abs(hidden1_kernel.reshape(pooled_side, pooled_side, old_conv2_channels, hidden1_kernel.shape[1])),
-            axis=(0, 1, 3),
-        )
-        keep = np.sort(np.argsort(conv_scores + hidden_scores)[-keep_count(old_conv2_channels, prune_ratio):])
-        conv2_kernel = conv2_kernel[:, :, :, keep]
-        conv2_bias = conv2_bias[keep]
-        hidden1_kernel = hidden1_kernel[rows_for_channels(keep, old_conv2_channels, pooled_side), :]
+    keep = np.sort(np.argsort(scores)[-keep_count(conv_kernel.shape[2], prune_ratio):])
 
-    model = make_model(
-        conv1_filters=conv1_kernel.shape[3],
-        conv2_filters=conv2_kernel.shape[3],
-        dense1_units=hidden1.units,
-        dense2_units=hidden2.units,
-    )
-    model(tf.zeros((1, 28, 28, 1)))
-    model.get_layer("conv1").set_weights([conv1_kernel, conv1_bias])
-    model.get_layer("conv2").set_weights([conv2_kernel, conv2_bias])
-    model.get_layer("hidden1").set_weights([hidden1_kernel, hidden1_bias])
-    model.get_layer("hidden2").set_weights(hidden2.get_weights())
+    conv_kernel = conv_kernel[:, :, keep]
+    conv_bias = conv_bias[keep]
+    d1_kernel = d1_kernel[keep, :]
+
+    model = make_model(make_adapted_norm(norm_weights), len(keep), dense1.units)
+    model(tf.zeros((1, kTimesteps, kFeatureCount)))
+    model.get_layer("conv").set_weights([conv_kernel, conv_bias])
+    model.get_layer("dense1").set_weights([d1_kernel, d1_bias])
     model.get_layer("output").set_weights(output.get_weights())
     return model
 
@@ -255,12 +226,14 @@ def finetune(model: tf.keras.Model, x: np.ndarray, y: np.ndarray, epochs: int, b
         model.fit(x, y, epochs=epochs, batch_size=batch_size, verbose=2, shuffle=True)
 
 
+# ---------------------------------------------------------------------------
+# Weight analysis helpers (unchanged from original)
+# ---------------------------------------------------------------------------
+
 def mean_absolute_error(original: np.ndarray, reconstructed: np.ndarray) -> float:
     if original.size == 0:
         return 0.0
     return float(np.mean(np.abs(original.astype(np.float32) - reconstructed.astype(np.float32))))
-
-
 
 
 def variable_to_numpy(variable: Any) -> np.ndarray:
@@ -395,25 +368,15 @@ def make_kmeans_quantized_model(
     finetune_epochs: int,
     batch_size: int,
 ) -> tuple[tf.keras.Model, dict[str, float]]:
-	
-    # ToDo: Fill the k-means function
-    # Clustering function from tfmot
-    # We can define k later
-    # Spacing is either LINEAR, RAND, DENSITY_BASED or Calculated
     clustered_model = clustering.cluster_weights(
         base_model,
-        number_of_clusters=max(1,int(k)),
+        number_of_clusters=max(1, int(k)),
         cluster_centroids_init=clustering.CentroidInitialization.LINEAR,
     )
-    # Set input dimension for new model
-    clustered_model(tf.zeros((1,28,28,1)))
-    # Compile the model
+    clustered_model(tf.zeros((1, kTimesteps, kFeatureCount)))
     compile_for_classification(clustered_model)
-    # Training
     finetune(clustered_model, x_train, y_train, finetune_epochs, batch_size)
-    # Remove training information for clustering
     model = clustering.strip_clustering(clustered_model)
-    # Compile the model
     compile_for_classification(model)
 
     return model, {
@@ -421,6 +384,10 @@ def make_kmeans_quantized_model(
         "compression_ratio": estimate_kmeans_compression_ratio(base_model, k),
     }
 
+
+# ---------------------------------------------------------------------------
+# TFLite export and evaluation
+# ---------------------------------------------------------------------------
 
 def make_representative_dataset(x: np.ndarray, sample_count: int):
     limit = max(1, min(int(sample_count), len(x)))
@@ -440,27 +407,21 @@ def export_tflite(
     representative_data: np.ndarray | None = None,
     representative_samples: int = 256,
 ) -> Path:
-    keras_dir = artifacts_dir / "keras"
     saved_models_dir = artifacts_dir / "saved_models"
-    keras_dir.mkdir(parents=True, exist_ok=True)
     saved_models_dir.mkdir(parents=True, exist_ok=True)
 
-    keras_path = keras_dir / f"{name}.keras"
     saved_model_dir = saved_models_dir / name
     tflite_path = artifacts_dir / f"{name}.tflite"
 
     if saved_model_dir.exists():
         shutil.rmtree(saved_model_dir)
 
-    model.save(str(keras_path))
     tf.saved_model.save(model, str(saved_model_dir))
     converter = tf.lite.TFLiteConverter.from_saved_model(str(saved_model_dir))
 
     if tflite_mode == "fp16":
-    	# ToDo: compare fp16 to default export
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
         converter.target_spec.supported_types = [tf.float16]
-        
     elif tflite_mode == "int8":
         if representative_data is None:
             raise ValueError("INT8 TFLite conversion needs representative_data.")
@@ -513,43 +474,22 @@ def evaluate_tflite(tflite_path: Path, x: np.ndarray, y: np.ndarray, sample_limi
     return float(np.mean(losses)), float(correct / max(1, limit))
 
 
+# ---------------------------------------------------------------------------
+# Metrics helpers
+# ---------------------------------------------------------------------------
+
 def count_nonzero_weights(model: tf.keras.Model) -> tuple[int, int]:
     total = 0
     nonzero = 0
-
     for layer in model.layers:
         for attr in ("kernel", "bias"):
             variable = getattr(layer, attr, None)
             if variable is None:
                 continue
-
             values = variable.numpy()
-            layer_total = int(values.size)
-            layer_nonzero = int(np.count_nonzero(values))
-
-            total += layer_total
-            nonzero += layer_nonzero
+            total += int(values.size)
+            nonzero += int(np.count_nonzero(values))
     return total, nonzero
-
-def save_test_digit_bmp(path: Path, image_28x28: np.ndarray, scale: int = 10) -> None:
-    image = np.repeat(np.repeat(image_28x28, scale, axis=0), scale, axis=1)
-    pixels = np.clip(image * 255.0, 0, 255).astype(np.uint8)
-    height, width = pixels.shape
-    row_stride = (width * 3 + 3) & ~3
-    pixel_data_size = row_stride * height
-    file_size = 14 + 40 + pixel_data_size
-
-    with path.open("wb") as output:
-        output.write(b"BM")
-        output.write(struct.pack("<IHHI", file_size, 0, 0, 14 + 40))
-        output.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0))
-        padding = b"\x00" * (row_stride - width * 3)
-        for y in range(height - 1, -1, -1):
-            row = bytearray()
-            for value in pixels[y]:
-                row.extend([int(value), int(value), int(value)])
-            output.write(row)
-            output.write(padding)
 
 
 def evaluate_keras_model(
@@ -595,7 +535,7 @@ def add_metrics_row(
             "validation_accuracy": f"{keras_metrics['validation_accuracy']:.3f}",
             "test_accuracy": f"{keras_metrics['test_accuracy']:.3f}",
             "tflite_test_accuracy": f"{tflite_metrics[1]:.3f}",
-            "tflite_file_size_kilobytes": int(tflite_bytes/1024),
+            "tflite_file_size_kilobytes": int(tflite_bytes / 1024),
             "parameters_total": total,
         }
     )
@@ -622,6 +562,31 @@ def append_model(
     )
 
 
+# ---------------------------------------------------------------------------
+# Test sample export
+# ---------------------------------------------------------------------------
+
+def save_test_gesture_csv(artifacts_dir: Path, data_dir: str) -> None:
+    """Save one resampled gesture-A recording as the on-device test sample."""
+    import glob
+    import pandas as pd
+    from resampler import resample_recording
+
+    candidates = sorted(glob.glob(os.path.join(data_dir, "*_gesture_A.csv")))
+    if not candidates:
+        return
+    df = pd.read_csv(candidates[0])
+    df_resampled = resample_recording(df, kTimesteps)
+    df_resampled["label"] = str(df["label"].iloc[0]).strip()
+    out_path = artifacts_dir / "test_gesture.csv"
+    df_resampled.to_csv(out_path, index=False)
+    print(f"Saved test gesture CSV: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main() -> int:
     args = parse_args()
     clustering = require_tfmot()
@@ -631,20 +596,27 @@ def main() -> int:
     artifacts_dir = Path(args.artifacts_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    x_train_full, y_train_full, x_test, y_test = load_data()
-    x_train, y_train, x_validation, y_validation = split_train_validation(
-        x_train_full, y_train_full, args.validation_split
-    )
+    # Load and split gesture data.
+    print("Loading gesture data…")
+    X, y = load_data(args.data_dir)
+    print(f"  {len(X)} samples  shape {X.shape}")
+    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y, args.validation_split)
+    print(f"  Train {len(X_train)} / Val {len(X_val)} / Test {len(X_test)}")
 
-    test_index = args.test_digit_index % len(x_test)
-    save_test_digit_bmp(artifacts_dir / "test_digit.bmp", x_test[test_index, :, :, 0])
-    (artifacts_dir / "test_digit_label.txt").write_text(f"{int(y_test[test_index])}\n", encoding="utf-8")
+    save_test_gesture_csv(artifacts_dir, args.data_dir)
 
-    baseline = make_model(args.conv_filters, args.dense_units)
+    # Build normalization layer adapted on raw training data.
+    # Baking it into the model means C++ can pass raw sensor values directly.
+    norm_layer = tf.keras.layers.Normalization(axis=-1)
+    norm_layer.adapt(X_train)
+    norm_layer.trainable = False
+    norm_weights = norm_layer.get_weights()
+
+    # Train baseline.
+    baseline = make_model(norm_layer, args.conv_filters, args.dense_units)
     baseline.fit(
-        x_train,
-        y_train,
-        validation_data=(x_validation, y_validation) if len(x_validation) else None,
+        X_train, y_train,
+        validation_data=(X_val, y_val),
         epochs=args.epochs,
         batch_size=args.batch_size,
         verbose=2,
@@ -654,21 +626,26 @@ def main() -> int:
     models: list[dict[str, Any]] = []
     append_model(models, "baseline", "normal FP32 training", baseline)
 
+    # Synapse pruning (zero small weights, architecture-agnostic).
     synapse = prune_synapses(baseline, args.synapse_prune_ratio)
-    finetune(synapse, x_train, y_train, args.finetune_epochs, args.batch_size)
+    finetune(synapse, X_train, y_train, args.finetune_epochs, args.batch_size)
     synapse = prune_synapses(synapse, args.synapse_prune_ratio)
     append_model(models, "synapse_pruned", "unstructured small-weight pruning", synapse)
 
-    neuron = prune_neurons(baseline, args.neuron_prune_ratio)
-    finetune(neuron, x_train, y_train, args.finetune_epochs, args.batch_size)
-    append_model(models, "neuron_pruned", "structured hidden-neuron pruning", neuron)
+    # Neuron pruning (remove least-important dense1 units).
+    neuron = prune_neurons(baseline, args.neuron_prune_ratio, norm_weights)
+    finetune(neuron, X_train, y_train, args.finetune_epochs, args.batch_size)
+    append_model(models, "neuron_pruned", "structured dense-neuron pruning", neuron)
 
-    channel = prune_channels(baseline, args.channel_prune_ratio)
-    finetune(channel, x_train, y_train, args.finetune_epochs, args.batch_size)
+    # Channel pruning (remove least-important Conv1D filters).
+    channel = prune_channels(baseline, args.channel_prune_ratio, norm_weights)
+    finetune(channel, X_train, y_train, args.finetune_epochs, args.batch_size)
     append_model(models, "channel_pruned", "structured convolution-channel pruning", channel)
 
+    # FP16 quantization export.
     append_model(models, "baseline_fp16", "FP16 TFLite export", baseline, "fp16", None, 2.0)
 
+    # INT8 quantization export.
     int8_metrics = linear_int8_metrics(baseline)
     append_model(
         models,
@@ -680,8 +657,9 @@ def main() -> int:
         int8_metrics["compression_ratio"],
     )
 
+    # K-Means weight clustering.
     kmeans_model, kmeans_metrics = make_kmeans_quantized_model(
-        baseline, args.kmeans_k, clustering, x_train, y_train, args.cluster_finetune_epochs, args.batch_size
+        baseline, args.kmeans_k, clustering, X_train, y_train, args.cluster_finetune_epochs, args.batch_size
     )
     append_model(
         models,
@@ -693,13 +671,14 @@ def main() -> int:
         kmeans_metrics["compression_ratio"],
     )
 
+    # Combined pruning + K-Means + INT8.
     for source_name, source_model in [
         ("synapse_pruned", synapse),
         ("neuron_pruned", neuron),
         ("channel_pruned", channel),
     ]:
         combined_model, combined_metrics = make_kmeans_quantized_model(
-            source_model, args.kmeans_k, clustering, x_train, y_train, args.cluster_finetune_epochs, args.batch_size
+            source_model, args.kmeans_k, clustering, X_train, y_train, args.cluster_finetune_epochs, args.batch_size
         )
         append_model(
             models,
@@ -711,6 +690,7 @@ def main() -> int:
             combined_metrics["compression_ratio"],
         )
 
+    # Export all model variants.
     rows: list[dict[str, Any]] = []
     baseline_tflite_bytes = 1
     for model_info in models:
@@ -718,19 +698,19 @@ def main() -> int:
         model = model_info["model"]
         tflite_mode = str(model_info["tflite_mode"])
         weights = count_nonzero_weights(model)
-        keras_metrics = evaluate_keras_model(model, x_validation, y_validation, x_test, y_test)
+        keras_metrics = evaluate_keras_model(model, X_val, y_val, X_test, y_test)
         tflite_path = export_tflite(
             model,
             artifacts_dir,
             name,
             tflite_mode=tflite_mode,
-            representative_data=x_train,
+            representative_data=X_train,
             representative_samples=args.representative_samples,
         )
         if name == "baseline":
             baseline_tflite_bytes = tflite_path.stat().st_size
 
-        tflite_metrics = evaluate_tflite(tflite_path, x_test, y_test, args.tflite_eval_samples)
+        tflite_metrics = evaluate_tflite(tflite_path, X_test, y_test, args.tflite_eval_samples)
         add_metrics_row(
             rows,
             name,
@@ -750,6 +730,7 @@ def main() -> int:
             f"tflite_acc={tflite_metrics[1]:.4f}"
         )
 
+    # baseline.tflite → model.tflite for backward compatibility with deploy scripts.
     shutil.copy2(artifacts_dir / "baseline.tflite", artifacts_dir / "model.tflite")
 
     metrics_path = artifacts_dir / "model_metrics.csv"
@@ -758,10 +739,9 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"Saved benchmark BMP: {artifacts_dir / 'test_digit.bmp'}")
-    print(f"Saved test digit label: {int(y_test[test_index])}")
     print(f"Saved model metrics: {metrics_path}")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

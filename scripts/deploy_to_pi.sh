@@ -27,23 +27,10 @@ fi
 
 shopt -s nullglob
 ARTIFACT_FILES=("${ARTIFACT_DIR}"/*.tflite)
-if [[ -f "${ARTIFACT_DIR}/test_digit.bmp" ]]; then
-  ARTIFACT_FILES+=("${ARTIFACT_DIR}/test_digit.bmp")
-fi
 shopt -u nullglob
 
-# Exercise 04: Part 6 (?)
-shopt -s nullglob
-ARTIFACT_FILES=("${ARTIFACT_DIR}"/*.tflite)
-shopt -u nullglob
-
-# Exercise 04: Part 1
-if [[ -f "${ARTIFACT_DIR}/2026-04-15_16-11-01_gesture_A_resampled.csv" ]]; then
-  ARTIFACT_FILES+=("${ARTIFACT_DIR}/2026-04-15_16-11-01_gesture_A_resampled.csv")
-fi
-
-if [[ -f "${ARTIFACT_DIR}/2026-05-05_18-44-37_gesture_C_resampled.csv" ]]; then
-  ARTIFACT_FILES+=("${ARTIFACT_DIR}/2026-05-05_18-44-37_gesture_C_resampled.csv")
+if [[ -f "${ARTIFACT_DIR}/test_gesture.csv" ]]; then
+  ARTIFACT_FILES+=("${ARTIFACT_DIR}/test_gesture.csv")
 fi
 
 if (( ${#ARTIFACT_FILES[@]} == 0 )); then

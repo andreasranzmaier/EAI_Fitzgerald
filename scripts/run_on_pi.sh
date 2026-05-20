@@ -14,7 +14,7 @@ set +a
 : "${PI_REMOTE_DIR:?}"
 : "${PI_REMOTE_BIN:=${APP_NAME}}"
 : "${PI_REMOTE_MODEL:=model.tflite}"
-: "${PI_RUN_ARGS:=${PI_REMOTE_MODEL}}"
+: "${PI_RUN_ARGS:=${PI_REMOTE_MODEL} --csv test_gesture.csv}"
 : "${PI_TMUX_SESSION:=pi_debug}"
 
 LOCAL_BIN="${BUILD_DIR}/${APP_NAME}"
@@ -27,10 +27,11 @@ fi
 
 shopt -s nullglob
 ARTIFACT_FILES=("${ARTIFACT_DIR}"/*.tflite)
-if [[ -f "${ARTIFACT_DIR}/test_digit.bmp" ]]; then
-  ARTIFACT_FILES+=("${ARTIFACT_DIR}/test_digit.bmp")
-fi
 shopt -u nullglob
+
+if [[ -f "${ARTIFACT_DIR}/test_gesture.csv" ]]; then
+  ARTIFACT_FILES+=("${ARTIFACT_DIR}/test_gesture.csv")
+fi
 
 if (( ${#ARTIFACT_FILES[@]} == 0 )); then
   echo "Missing converted models in ${ARTIFACT_DIR}. Run make train first." >&2

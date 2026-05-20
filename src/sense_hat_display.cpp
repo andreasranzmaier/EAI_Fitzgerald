@@ -30,6 +30,22 @@ constexpr std::uint8_t kDigitPatterns[10][8] = {
     {0b00111100, 0b01100110, 0b01100110, 0b00111110, 0b00000110, 0b00001100, 0b00111000, 0b00000000},
 };
 
+// Gesture class patterns: index 0=A, 1=B, 2=C, 3=? (garbage/unknown)
+constexpr std::uint8_t kGesturePatterns[4][8] = {
+    // A
+    {0b00111100, 0b01100110, 0b01100110, 0b01111110,
+     0b01100110, 0b01100110, 0b01100110, 0b00000000},
+    // B
+    {0b01111100, 0b01100110, 0b01100110, 0b01111100,
+     0b01100110, 0b01100110, 0b01111100, 0b00000000},
+    // C
+    {0b00111100, 0b01100110, 0b01100000, 0b01100000,
+     0b01100000, 0b01100110, 0b00111100, 0b00000000},
+    // ? (garbage)
+    {0b00111100, 0b01100110, 0b00000110, 0b00001100,
+     0b00011000, 0b00000000, 0b00011000, 0b00000000},
+};
+
 constexpr std::uint8_t kErrorPattern[8] = {
     0b10000001,
     0b01000010,
@@ -171,6 +187,31 @@ bool SenseHatDisplay::ShowDigit(int digit, float confidence) {
   }
 
   WritePattern(kDigitPatterns[digit], color);
+  return true;
+}
+
+bool SenseHatDisplay::ShowGesture(int class_index, float confidence) {
+  if (!available_) {
+    return false;
+  }
+  if (class_index < 0 || class_index > 3) {
+    ShowErrorMarker();
+    return false;
+  }
+
+  const std::uint8_t brightness = static_cast<std::uint8_t>(
+      std::clamp(64.0F + confidence * 191.0F, 32.0F, 255.0F));
+
+  std::uint16_t color = 0;
+  if (confidence >= 0.80F) {
+    color = MakeRgb565(0, brightness, 0);
+  } else if (confidence >= 0.55F) {
+    color = MakeRgb565(brightness, brightness, 0);
+  } else {
+    color = MakeRgb565(brightness, 0, 0);
+  }
+
+  WritePattern(kGesturePatterns[class_index], color);
   return true;
 }
 
