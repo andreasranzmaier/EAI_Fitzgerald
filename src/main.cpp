@@ -10,11 +10,19 @@
 #include "sense_hat_display.h"
 #include "tflite_digit_classifier.h"
 
+// E04 Added
+#include <fstream>
+#include <sstream>
+#include "tflite_gesture_classifier.h"
+
 namespace {
 
 constexpr const char* kModelPath = "model.tflite";
 constexpr const char* kCapturePath = "/tmp/mnist_capture.bmp";
 constexpr const char* kTestImagePath = "test_digit.bmp";
+
+// E04 Added - here you have to change the path to the choosen .csv file (same name as in deploy_to_pi.sh)
+constexpr const char* kCsvPath = "test_gesture.csv";
 
 constexpr int kCaptureTimeoutMs = 1200;
 constexpr int kCaptureWidth = 640;
@@ -34,6 +42,10 @@ enum class ProgramMode {
 struct ProgramOptions {
   std::string model_path = kModelPath;
   std::string test_image_path = kTestImagePath;
+
+  // E04 Added
+  std::string csv_path = kCsvPath;
+
   ProgramMode mode = ProgramMode::kCameraDigitInference;
   bool show_on_sense_hat = kShowOnSenseHat;
   int warmup_runs = kDefaultWarmupRuns;
@@ -76,6 +88,13 @@ bool ParsePositiveInt(const std::string& text, int* value) {
 bool ParseArgs(int argc, char** argv, ProgramOptions* options) {
   for (int index = 1; index < argc; ++index) {
     const std::string arg = argv[index];
+
+    // E04 Added - parse the new --csv argument
+    // reads the next argument as the csv path
+    if (arg == "--csv" && index + 1 < argc) {
+      options->csv_path = argv[++index];
+      continue;
+    }
 
     if (arg == "--help" || arg == "-h") {
       PrintUsage(argv[0]);
@@ -159,6 +178,52 @@ bool LoadDigitInput(const std::string& image_path,
   }
 
   *mnist_input = preprocess.mnist_input;
+  return true;
+}
+
+// E04 Added - Loads and preprocesses one gesture csv file.
+bool LoadGestureInput(const std::string& csv_path,
+                         std::vector<float>* gesture_input) {
+  std::ifstream file(csv_path);
+
+  if (!file.is_open()) {
+    std::cerr << "Failed to open CSV file: " << csv_path << "\n";
+    return false;
+  }
+
+  // Read and discard the header row
+  std::string header;
+  std::getline(file, header);
+
+  // Defining the feature names, to match csv order
+  const std::vector<std::string> kFeatures = {
+    "accel_x", "accel_y", "accel_z",
+    "gyro_x",  "gyro_y",  "gyro_z",
+    "mag_x",   "mag_y",   "mag_z"
+  };
+
+  std::string line;
+  while (std::getline(file, line)) {
+    std::istringstream sst(line);
+    std::string cell;
+
+    std::vector<std::string> cells;
+    // splits the row by commas and stores the results in a vector of strings
+    while (std::getline(sst, cell, ',')) {
+      cells.push_back(cell);
+    }
+    // Parse only the 9 feature columns from the timestep row
+    for (int i = 0; i < kGestureFeatures; ++i) {
+      try {
+        gesture_input->push_back(std::stof(cells.at(i)));
+      } catch (const std::exception&) {
+        std::cerr << "Failed to parse CSV value.\n";
+        return false;
+      }
+    }
+  }
+
+  file.close();
   return true;
 }
 
