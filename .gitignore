@@ -7,3 +7,7 @@ third_party/
 __pycache__/
 *.pyc
 data/
+update_todo/
+update_todo.zip
+.DS_Store
+.idea/
