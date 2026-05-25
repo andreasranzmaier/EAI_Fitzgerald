@@ -19,7 +19,7 @@ from sklearn.model_selection import train_test_split
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from resampler import load_gesture_sequences
 
-# Model input constants — must match tflite_gesture_classifier.h
+# Model input constants - must match tflite_gesture_classifier.h
 kTimesteps = 50
 kFeatureCount = 9
 kNumClasses = 4
