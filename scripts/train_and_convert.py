@@ -690,27 +690,6 @@ def main() -> int:
             combined_metrics["compression_ratio"],
         )
 
-    # Added Ex 05: Combining Neuron Pruning, Channel Pruning and Int8 Quantization 
-    neuron_then_channel = prune_channels(neuron, args.channel_prune_ratio, norm_weights)
-    finetune(neuron_then_channel, X_train, y_train, args.finetune_epochs, args.batch_size)
-
-    channel_then_neuron = prune_neurons(channel, args.neuron_prune_ratio, norm_weights)
-    finetune(channel_then_neuron, X_train, y_train, args.finetune_epochs, args.batch_size)
-
-    for source_name, source_model in [
-        ("neuron_then_channel_pruned", neuron_then_channel),
-        ("channel_then_neuron_pruned", channel_then_neuron),
-    ]:
-        append_model(
-            models,
-            f"{source_name}_int8",
-            "neuron + channel pruning + INT8 TFLite export",
-            source_model,
-            "int8",
-            None,
-            None,
-        )
-
     # Export all model variants.
     rows: list[dict[str, Any]] = []
     baseline_tflite_bytes = 1
