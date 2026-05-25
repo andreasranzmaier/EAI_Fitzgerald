@@ -12,7 +12,7 @@
 namespace {
 
 constexpr const char* kModelPath  = "model.tflite";
-constexpr const char* kCsvPath    = "test_gesture.csv";
+constexpr const char* kCsvPath    = "2026-04-15_19-57-53_gesture_A.csv";
 constexpr bool        kShowOnSenseHat = true;
 
 constexpr int kDefaultWarmupRuns    = 20;
