@@ -1,7 +1,7 @@
-
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 // One IMU reading from the Sense HAT LSM9DS1.
@@ -16,8 +16,9 @@ struct ImuSample {
   float mag_x,   mag_y,   mag_z;
 };
 
-// Reads the Sense HAT LSM9DS1 directly via /dev/i2c-1.
-// AG at 0x6A, magnetometer at 0x1C — confirmed by i2cdetect on the target Pi.
+// Reads the Sense HAT LSM9DS1 via RTIMULib.
+// Uses /etc/RTIMULib.ini (installed by the sense-hat package) so axis
+// orientation and calibration match the Python library used for training.
 class SenseHatImu {
  public:
   SenseHatImu();
@@ -26,15 +27,12 @@ class SenseHatImu {
   bool available() const { return available_; }
   const std::string& error_message() const { return error_message_; }
 
-  // Fills *sample with the current sensor state.  Returns false on I/O error.
+  // Fills *sample with the current sensor state. Returns false on I/O error.
   bool Read(ImuSample* sample);
 
  private:
-  bool InitDevice();
-  bool WriteReg(std::uint8_t addr, std::uint8_t reg, std::uint8_t val);
-  bool ReadRegs(std::uint8_t addr, std::uint8_t reg, std::uint8_t* buf, int len);
-
-  int i2c_fd_ = -1;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
   bool available_ = false;
   std::string error_message_;
 };

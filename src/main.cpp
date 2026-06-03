@@ -24,31 +24,6 @@ constexpr bool kShowOnSenseHat   = true;
 constexpr int kDefaultWarmupRuns    = 20;
 constexpr int kDefaultBenchmarkRuns = 100;
 
-// extracted from the training
-constexpr float kMean[9] = {
-    0.0968655363f,
-    0.00548835602f,
-    0.913254278f,
-    0.0133860345f,
-    -0.00939962375f,
-    0.0178603629f,
-    6.87343728f,
-    23.9275449f,
-    14.6185227f
-};
-
-constexpr float kStd[9] = {
-    0.30135001f,
-    0.15791982f,
-    0.25561594f,
-    0.52754535f,
-    0.54820968f,
-    0.54010467f,
-    14.90355991f,
-    12.23004793f,
-    4.03911827f
-};
-
 // Sliding window parameters for stream mode.
 // ~60 ms/sample should cover ~5 s of motion.
 constexpr int kWindowRawSamples  = 80;  // raw samples kept in the ring buffer
@@ -132,10 +107,6 @@ bool ParseArgs(int argc, char** argv, ProgramOptions* options) {
         std::cerr << "Invalid --warmup value.\n";
         return false;
       }
-      continue;
-    }
-    if (arg == "--no-sensehat") {
-      options->show_on_sense_hat = false;
       continue;
     }
     // Positional: treat bare argument as model path for backwards compat.
@@ -359,17 +330,10 @@ int RunStreamMode(const ProgramOptions& options,
         samples_since_inference >= kWindowStride) {
       samples_since_inference = 0;
 
-      std::vector<float> input = ResampleWindow(buffer);
-      // normalizing the input using the training mean/stddev (mirroring the Python preprocessor used during training).
-      // using the per-feature mean/stddev arrays directly since the resampler preserves feature order.
-      std::vector<float> norm;
-      norm.reserve(input.size());
-
-      for (size_t i = 0; i < input.size(); ++i) {
-          int f = i % kGestureFeatures;
-          norm.push_back((input[i] - kMean[f]) / (kStd[f] + 1e-8f));
-      }
-      const GesturePrediction pred = classifier->Predict(norm);
+      // Normalization is baked into the model (tf.keras.layers.Normalization),
+      // so raw resampled values are passed directly.
+      const std::vector<float> input = ResampleWindow(buffer);
+      const GesturePrediction pred = classifier->Predict(input);
       if (!classifier->ok()) {
         std::cerr << "Inference failed: " << classifier->error_message() << "\n";
         break;
@@ -378,13 +342,6 @@ int RunStreamMode(const ProgramOptions& options,
       const int cls = pred.gesture_index;
       const char* lbl = (cls >= 0 && cls < kGestureNumClasses) ? kGestureLabels[cls] : "?";
       std::cout << "Window: " << lbl << " (" << pred.confidence << ")\n";
-
-      std::cout << "RAW[0]=" << input[0]
-          << " NORM[0]=" << norm[0] << "\n";
-      for (int i = 0; i < 9; i++) {
-          std::cout << input[i] << " ";
-      }
-      std::cout << "\n";
 
       if (cls == kGarbageClass) {
         // No gesture in motion - clear display and reset consensus.

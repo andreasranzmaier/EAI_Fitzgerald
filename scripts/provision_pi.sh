@@ -16,17 +16,17 @@ ssh "$PI_USER@$PI_HOST" "mkdir -p '$PI_REMOTE_DIR'"
 
 if [[ -n "${PI_PASS:-}" ]]; then
   ssh "$PI_USER@$PI_HOST" \
-    "sudo -S -p '' bash -lc 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y gdbserver tmux rsync linux-perf'" \
+    "sudo -S -p '' bash -lc 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y gdbserver tmux rsync linux-perf librtimulib7'" \
     <<<"$PI_PASS"
 else
   if ssh "$PI_USER@$PI_HOST" "sudo -n true" >/dev/null 2>&1; then
     ssh "$PI_USER@$PI_HOST" \
-      "sudo bash -lc 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y gdbserver tmux rsync linux-perf'"
+      "sudo bash -lc 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y gdbserver tmux rsync linux-perf librtimulib7'"
   else
     read -r -s -p "Pi sudo password: " PI_PASS
     echo
     ssh "$PI_USER@$PI_HOST" \
-      "sudo -S -p '' bash -lc 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y gdbserver tmux rsync linux-perf'" \
+      "sudo -S -p '' bash -lc 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y gdbserver tmux rsync linux-perf librtimulib7'" \
       <<<"$PI_PASS"
   fi
 fi
