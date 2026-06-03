@@ -11,7 +11,6 @@ class SenseHatDisplay {
 
   bool available() const { return available_; }
   const std::string& error_message() const { return error_message_; }
-  bool ShowDigit(int digit, float confidence);
   bool ShowGesture(int class_index, float confidence);
   void ShowErrorMarker();
   void Clear();

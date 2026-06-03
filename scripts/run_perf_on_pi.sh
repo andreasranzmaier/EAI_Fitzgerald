@@ -8,16 +8,14 @@ set -a
 source .env
 set +a
 
-: "${APP_NAME:=mnist_sensehat_demo}"
+: "${APP_NAME:=gesture_sensehat_demo}"
 : "${ARTIFACT_DIR:=artifacts}"
 : "${PI_REMOTE_DIR:?}"
 : "${PI_REMOTE_BIN:=${APP_NAME}}"
 : "${PI_TMUX_SESSION:=pi_debug}"
-: "${PI_TEST_IMAGE:=test_digit.bmp}"
-# UE8: Default perf run includes pruning plus the minimal quantization variants.
-# UE9: Update with kmeans and variable k
+: "${PI_TEST_CSV:=test_gesture.csv}"
 : "${KMEANS_K:=16}"
-: "${PI_MODEL_LIST:=baseline.tflite baseline_fp16.tflite baseline_int8.tflite synapse_pruned.tflite neuron_pruned.tflite channel_pruned.tflite kmeans_k${KMEANS_K}.tflite synapse_pruned_kmeans_k${KMEANS_K}_int8.tflite neuron_pruned_kmeans_k${KMEANS_K}_int8.tflite channel_pruned_kmeans_k${KMEANS_K}_int8.tflite}"
+: "${PI_MODEL_LIST:=baseline.tflite baseline_int8.tflite synapse_pruned.tflite neuron_pruned.tflite channel_pruned.tflite optimized_int8.tflite}"
 : "${PI_BENCHMARK_RUNS:=1000}"
 : "${PI_BENCHMARK_WARMUP:=20}"
 : "${PI_PERF_REPEAT:=5}"
@@ -40,7 +38,7 @@ ssh "$PI_USER@$PI_HOST" bash -s -- \
   "$PI_REMOTE_DIR" \
   "$PI_REMOTE_BIN" \
   "$PI_TMUX_SESSION" \
-  "$PI_TEST_IMAGE" \
+  "$PI_TEST_CSV" \
   "$PI_BENCHMARK_RUNS" \
   "$PI_BENCHMARK_WARMUP" \
   "$PI_PERF_REPEAT" \
@@ -52,7 +50,7 @@ set -euo pipefail
 REMOTE_DIR="$1"
 REMOTE_BIN="$2"
 TMUX_SESSION="$3"
-TEST_IMAGE="$4"
+TEST_CSV="$4"
 BENCHMARK_RUNS="$5"
 BENCHMARK_WARMUP="$6"
 PERF_REPEAT="$7"
@@ -73,8 +71,8 @@ if [[ ! -x "./$REMOTE_BIN" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$TEST_IMAGE" ]]; then
-  echo "Missing test image: $REMOTE_DIR/$TEST_IMAGE" >&2
+if [[ ! -f "$TEST_CSV" ]]; then
+  echo "Missing test gesture CSV: $REMOTE_DIR/$TEST_CSV" >&2
   exit 1
 fi
 
@@ -111,7 +109,7 @@ for model in "${MODELS[@]}"; do
       -- "./$REMOTE_BIN" \
       --model "$model" \
       --benchmark \
-      --test-image "$TEST_IMAGE" \
+      --csv "$TEST_CSV" \
       --runs "$BENCHMARK_RUNS" \
       --warmup "$BENCHMARK_WARMUP" \
       > "$program_file" 2>&1

@@ -8,7 +8,7 @@ set -a
 source .env
 set +a
 
-: "${APP_NAME:=mnist_sensehat_demo}"
+: "${APP_NAME:=gesture_sensehat_demo}"
 : "${ARTIFACT_DIR:=artifacts}"
 : "${BUILD_DIR:=build}"
 : "${PI_REMOTE_DIR:?}"

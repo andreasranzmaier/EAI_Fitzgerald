@@ -17,21 +17,9 @@
 
 namespace {
 
-constexpr std::uint8_t kDigitPatterns[10][8] = {
-    {0b00111100, 0b01100110, 0b01101110, 0b01110110, 0b01100110, 0b01100110, 0b00111100, 0b00000000},
-    {0b00011000, 0b00111000, 0b00011000, 0b00011000, 0b00011000, 0b00011000, 0b00111100, 0b00000000},
-    {0b00111100, 0b01100110, 0b00000110, 0b00001100, 0b00110000, 0b01100000, 0b01111110, 0b00000000},
-    {0b00111100, 0b01100110, 0b00000110, 0b00011100, 0b00000110, 0b01100110, 0b00111100, 0b00000000},
-    {0b00001100, 0b00011100, 0b00101100, 0b01001100, 0b01111110, 0b00001100, 0b00011110, 0b00000000},
-    {0b01111110, 0b01100000, 0b01111100, 0b00000110, 0b00000110, 0b01100110, 0b00111100, 0b00000000},
-    {0b00111100, 0b01100000, 0b01111100, 0b01100110, 0b01100110, 0b01100110, 0b00111100, 0b00000000},
-    {0b01111110, 0b01100110, 0b00000110, 0b00001100, 0b00011000, 0b00011000, 0b00011000, 0b00000000},
-    {0b00111100, 0b01100110, 0b01100110, 0b00111100, 0b01100110, 0b01100110, 0b00111100, 0b00000000},
-    {0b00111100, 0b01100110, 0b01100110, 0b00111110, 0b00000110, 0b00001100, 0b00111000, 0b00000000},
-};
-
-// Gesture class patterns: index 0=A, 1=B, 2=C, 3=? (garbage/unknown)
-constexpr std::uint8_t kGesturePatterns[4][8] = {
+// Gesture class patterns: 0=A, 1=B, 2=C.
+// Class 3 (garbage/unknown) is handled by Clear() - no symbol shown.
+constexpr std::uint8_t kGesturePatterns[3][8] = {
     // A
     {0b00111100, 0b01100110, 0b01100110, 0b01111110,
      0b01100110, 0b01100110, 0b01100110, 0b00000000},
@@ -41,9 +29,6 @@ constexpr std::uint8_t kGesturePatterns[4][8] = {
     // C
     {0b00111100, 0b01100110, 0b01100000, 0b01100000,
      0b01100000, 0b01100110, 0b00111100, 0b00000000},
-    // ? (garbage)
-    {0b00111100, 0b01100110, 0b00000110, 0b00001100,
-     0b00011000, 0b00000000, 0b00011000, 0b00000000},
 };
 
 constexpr std::uint8_t kErrorPattern[8] = {
@@ -165,36 +150,18 @@ void SenseHatDisplay::WritePattern(const std::uint8_t pattern[8], std::uint16_t 
   }
 }
 
-bool SenseHatDisplay::ShowDigit(int digit, float confidence) {
-  if (!available_) {
-    return false;
-  }
-  if (digit < 0 || digit > 9) {
-    ShowErrorMarker();
-    return false;
-  }
-
-  const std::uint8_t brightness = static_cast<std::uint8_t>(
-      std::clamp(64.0F + confidence * 191.0F, 32.0F, 255.0F));
-
-  std::uint16_t color = 0;
-  if (confidence >= 0.80F) {
-    color = MakeRgb565(0, brightness, 0);
-  } else if (confidence >= 0.55F) {
-    color = MakeRgb565(brightness, brightness, 0);
-  } else {
-    color = MakeRgb565(brightness, 0, 0);
-  }
-
-  WritePattern(kDigitPatterns[digit], color);
-  return true;
-}
-
 bool SenseHatDisplay::ShowGesture(int class_index, float confidence) {
   if (!available_) {
     return false;
   }
-  if (class_index < 0 || class_index > 3) {
+
+  // Garbage class: blank the display - no symbol for "unknown".
+  if (class_index == 3) {
+    Clear();
+    return true;
+  }
+
+  if (class_index < 0 || class_index > 2) {
     ShowErrorMarker();
     return false;
   }
