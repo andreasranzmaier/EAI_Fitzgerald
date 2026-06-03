@@ -14,6 +14,7 @@
 #include "sense_hat_display.h"
 #include "sense_hat_imu.h"
 #include "tflite_gesture_classifier.h"
+#include "live_gesture_stream.h"
 
 namespace {
 
@@ -116,6 +117,10 @@ bool ParseArgs(int argc, char** argv, ProgramOptions* options) {
     // Positional: treat bare argument as model path for backwards compat.
     if (!arg.empty() && arg[0] != '-') {
       options->model_path = arg;
+      continue;
+    }
+    if((arg == "--live")){
+      options->mode = ProgramMode::kLiveStream;
       continue;
     }
 
