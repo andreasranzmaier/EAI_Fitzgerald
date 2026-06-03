@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(APP_NAME "gesture_sensehat_demo" CACHE STRING "Application target name")
+set(APP_NAME "mnist_sensehat_demo" CACHE STRING "Application target name")
 project(${APP_NAME} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -21,6 +21,29 @@ add_subdirectory(
 
 find_package(Threads REQUIRED)
 
+# RTIMULib is installed in the dev container's aarch64 sysroot by
+# .devcontainer/Dockerfile. The imported target keeps include paths and
+# linker paths together for the Raspberry Pi cross-build.
+find_path(RTIMULIB_INCLUDE_DIR
+  NAMES RTIMULib.h
+)
+find_library(RTIMULIB_LIBRARY
+  NAMES RTIMULib
+)
+include(FindPackageHandleStandardArgs)
+find_package_handle_standard_args(RTIMULib REQUIRED_VARS
+  RTIMULIB_LIBRARY
+  RTIMULIB_INCLUDE_DIR
+)
+
+if(NOT TARGET RTIMULib::RTIMULib)
+  add_library(RTIMULib::RTIMULib UNKNOWN IMPORTED)
+  set_target_properties(RTIMULib::RTIMULib PROPERTIES
+    IMPORTED_LOCATION "${RTIMULIB_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${RTIMULIB_INCLUDE_DIR}"
+  )
+endif()
+
 file(GLOB APP_SOURCES CONFIGURE_DEPENDS
   src/*.cpp
 )
@@ -35,6 +58,7 @@ target_include_directories(${APP_NAME} PRIVATE
 
 target_link_libraries(${APP_NAME} PRIVATE
   tensorflow-lite
+  RTIMULib::RTIMULib
   Threads::Threads
   dl
   m

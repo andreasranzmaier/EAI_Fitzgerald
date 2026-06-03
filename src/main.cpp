@@ -14,7 +14,6 @@
 #include "sense_hat_display.h"
 #include "sense_hat_imu.h"
 #include "tflite_gesture_classifier.h"
-#include "live_gesture_stream.h"
 
 namespace {
 
@@ -24,6 +23,31 @@ constexpr bool kShowOnSenseHat   = true;
 
 constexpr int kDefaultWarmupRuns    = 20;
 constexpr int kDefaultBenchmarkRuns = 100;
+
+// extracted from the training
+constexpr float kMean[9] = {
+    0.0968655363f,
+    0.00548835602f,
+    0.913254278f,
+    0.0133860345f,
+    -0.00939962375f,
+    0.0178603629f,
+    6.87343728f,
+    23.9275449f,
+    14.6185227f
+};
+
+constexpr float kStd[9] = {
+    0.30135001f,
+    0.15791982f,
+    0.25561594f,
+    0.52754535f,
+    0.54820968f,
+    0.54010467f,
+    14.90355991f,
+    12.23004793f,
+    4.03911827f
+};
 
 // Sliding window parameters for stream mode.
 // ~60 ms/sample should cover ~5 s of motion.
@@ -119,10 +143,6 @@ bool ParseArgs(int argc, char** argv, ProgramOptions* options) {
       options->model_path = arg;
       continue;
     }
-    if((arg == "--live")){
-      options->mode = ProgramMode::kLiveStream;
-      continue;
-    }
 
     std::cerr << "Unknown or incomplete argument: " << arg << "\n";
     PrintUsage(argv[0]);
@@ -170,35 +190,53 @@ bool LoadGestureInput(const std::string& csv_path,
 
 // Resampling: N raw ImuSamples -> exactly kGestureTimesteps × kGestureFeatures
 // via linear interpolation (mirrors the Python resampler used during training).
+std::vector<float> ResampleWindow(const std::deque<ImuSample>& buf)
+{
+    std::vector<float> result;
+    result.reserve(kGestureTimesteps * kGestureFeatures);
 
-std::vector<float> ResampleWindow(const std::deque<ImuSample>& buf) {
-  const int n = static_cast<int>(buf.size());
-  std::vector<float> result;
-  result.reserve(kGestureTimesteps * kGestureFeatures);
+    const int n = static_cast<int>(buf.size());
+    if (n < 2) return result;
 
-  for (int j = 0; j < kGestureTimesteps; ++j) {
-    const float t   = static_cast<float>(j) / static_cast<float>(kGestureTimesteps - 1);
-    const float pos = t * static_cast<float>(n - 1);
-    const int   i0  = std::min(static_cast<int>(pos), n - 2);
-    const int   i1  = i0 + 1;
-    const float a   = pos - static_cast<float>(i0);
+    auto get = [&](const ImuSample& s, int f) -> float {
+        switch (f) {
+            case 0: return s.accel_x;
+            case 1: return s.accel_y;
+            case 2: return s.accel_z;
+            case 3: return s.gyro_x;
+            case 4: return s.gyro_y;
+            case 5: return s.gyro_z;
+            case 6: return s.mag_x;
+            case 7: return s.mag_y;
+            case 8: return s.mag_z;
+            default: return 0.0f;
+        }
+    };
 
-    const ImuSample& s0 = buf[static_cast<std::size_t>(i0)];
-    const ImuSample& s1 = buf[static_cast<std::size_t>(i1)];
+    for (int j = 0; j < kGestureTimesteps; ++j)
+    {
+        float t = static_cast<float>(j) / (kGestureTimesteps - 1);
+        float pos = t * (n - 1);
 
-    result.push_back(s0.accel_x + a * (s1.accel_x - s0.accel_x));
-    result.push_back(s0.accel_y + a * (s1.accel_y - s0.accel_y));
-    result.push_back(s0.accel_z + a * (s1.accel_z - s0.accel_z));
-    result.push_back(s0.gyro_x  + a * (s1.gyro_x  - s0.gyro_x));
-    result.push_back(s0.gyro_y  + a * (s1.gyro_y  - s0.gyro_y));
-    result.push_back(s0.gyro_z  + a * (s1.gyro_z  - s0.gyro_z));
-    result.push_back(s0.mag_x   + a * (s1.mag_x   - s0.mag_x));
-    result.push_back(s0.mag_y   + a * (s1.mag_y   - s0.mag_y));
-    result.push_back(s0.mag_z   + a * (s1.mag_z   - s0.mag_z));
-  }
-  return result;
+        int i0 = std::clamp(static_cast<int>(pos), 0, n - 2);
+        int i1 = i0 + 1;
+        float a = pos - i0;
+
+        const ImuSample& s0 = buf[i0];
+        const ImuSample& s1 = buf[i1];
+
+        for (int f = 0; f < kGestureFeatures; ++f)
+        {
+            float v0 = get(s0, f);
+            float v1 = get(s1, f);
+
+            float v = v0 + a * (v1 - v0);
+            result.push_back(v);
+        }
+    }
+
+    return result;
 }
-
 // Modes
 int RunGestureInference(const ProgramOptions& options,
                         TfliteGestureClassifier* classifier) {
@@ -321,8 +359,17 @@ int RunStreamMode(const ProgramOptions& options,
         samples_since_inference >= kWindowStride) {
       samples_since_inference = 0;
 
-      const std::vector<float> input = ResampleWindow(buffer);
-      const GesturePrediction pred   = classifier->Predict(input);
+      std::vector<float> input = ResampleWindow(buffer);
+      // normalizing the input using the training mean/stddev (mirroring the Python preprocessor used during training).
+      // using the per-feature mean/stddev arrays directly since the resampler preserves feature order.
+      std::vector<float> norm;
+      norm.reserve(input.size());
+
+      for (size_t i = 0; i < input.size(); ++i) {
+          int f = i % kGestureFeatures;
+          norm.push_back((input[i] - kMean[f]) / (kStd[f] + 1e-8f));
+      }
+      const GesturePrediction pred = classifier->Predict(norm);
       if (!classifier->ok()) {
         std::cerr << "Inference failed: " << classifier->error_message() << "\n";
         break;
@@ -331,6 +378,13 @@ int RunStreamMode(const ProgramOptions& options,
       const int cls = pred.gesture_index;
       const char* lbl = (cls >= 0 && cls < kGestureNumClasses) ? kGestureLabels[cls] : "?";
       std::cout << "Window: " << lbl << " (" << pred.confidence << ")\n";
+
+      std::cout << "RAW[0]=" << input[0]
+          << " NORM[0]=" << norm[0] << "\n";
+      for (int i = 0; i < 9; i++) {
+          std::cout << input[i] << " ";
+      }
+      std::cout << "\n";
 
       if (cls == kGarbageClass) {
         // No gesture in motion - clear display and reset consensus.
