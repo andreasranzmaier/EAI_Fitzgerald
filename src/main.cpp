@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <cmath>
 
 #include "sense_hat_display.h"
 #include "sense_hat_imu.h"
@@ -27,7 +28,7 @@ constexpr int kDefaultBenchmarkRuns = 100;
 // Sliding window parameters for stream mode.
 // ~60 ms/sample should cover ~5 s of motion.
 constexpr int kWindowRawSamples  = 80;  // raw samples kept in the ring buffer
-constexpr int kWindowStride      = 20;  // advance this many samples between inferences
+constexpr int kWindowStride      = 40;  // advance this many samples between inferences
 constexpr int kConsensusRequired = 3;   // consecutive same-class windows to confirm gesture
 constexpr int kPollIntervalMs    = 60;  // IMU poll rate (matches training data recording rate)
 
@@ -143,8 +144,7 @@ bool LoadGestureInput(const std::string& csv_path,
     while (std::getline(sst, cell, ',')) cells.push_back(cell);
 
     // Columns: timestamp_ms, label, accel_x/y/z, gyro_x/y/z, mag_x/y/z
-    // Skip the first two (timestamp + label); read the next 9 as features.
-    constexpr int kSkip = 2;
+    constexpr int kSkip = 0;
     for (int i = kSkip; i < kSkip + kGestureFeatures; ++i) {
       try {
         gesture_input->push_back(std::stof(cells.at(static_cast<std::size_t>(i))));
@@ -310,6 +310,7 @@ int RunStreamMode(const ProgramOptions& options,
   int samples_since_inference = 0;
   int prev_class              = -1;
   int consensus_count         = 0;
+  int garbage_count           = 2;
 
   std::cout << "Stream mode - press Ctrl+C to stop\n";
 
@@ -327,36 +328,78 @@ int RunStreamMode(const ProgramOptions& options,
 
     // Run inference when the ring buffer is full and stride has elapsed.
     if (static_cast<int>(buffer.size()) >= kWindowRawSamples &&
-        samples_since_inference >= kWindowStride) {
+        samples_since_inference >= kWindowStride) {  
       samples_since_inference = 0;
 
-      // Normalization is baked into the model (tf.keras.layers.Normalization),
-      // so raw resampled values are passed directly.
-      const std::vector<float> input = ResampleWindow(buffer);
-      const GesturePrediction pred = classifier->Predict(input);
+      //  Trim leading idle samples before resampling.
+      constexpr float kMotionThresholdG = 0.15f;  // tune to your sensor noise floor
+      int motion_start = 0;
+      for (int i = 0; i < static_cast<int>(buffer.size()); ++i) {
+        const ImuSample& s = buffer[i];
+        const float mag = std::sqrt(s.accel_x * s.accel_x +
+                                    s.accel_y * s.accel_y +
+                                    s.accel_z * s.accel_z);
+        // accel_z will be ~1 g at rest due to gravity; subtract 1 g baseline
+        const float dynamic_mag = std::abs(mag - 1.0f);
+        if (dynamic_mag > kMotionThresholdG) {
+          motion_start = i;
+          break;
+        }
+      }
+
+      // Only use the active motion region for resampling.
+      // If no motion onset is found, motion_start stays 0 (full buffer used).
+      const std::deque<ImuSample> active_buf(
+          buffer.begin() + motion_start, buffer.end());
+
+      // Need at least 2 samples to interpolate.
+      if (static_cast<int>(active_buf.size()) < 2) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+        continue;
+      }
+
+      const std::vector<float> input = ResampleWindow(active_buf);
+      const GesturePrediction pred   = classifier->Predict(input);
       if (!classifier->ok()) {
         std::cerr << "Inference failed: " << classifier->error_message() << "\n";
         break;
       }
 
-      const int cls = pred.gesture_index;
-      const char* lbl = (cls >= 0 && cls < kGestureNumClasses) ? kGestureLabels[cls] : "?";
+      const int cls      = pred.gesture_index;
+      const char* lbl    = (cls >= 0 && cls < kGestureNumClasses)
+                               ? kGestureLabels[cls] : "?";
       std::cout << "Window: " << lbl << " (" << pred.confidence << ")\n";
 
       if (cls == kGarbageClass) {
-        // No gesture in motion - clear display and reset consensus.
-        prev_class     = -1;
-        consensus_count = 0;
-        if (options.show_on_sense_hat && display.available())
-          display.Clear();
-      } else if (cls == prev_class) {
-        ++consensus_count;
-        if (consensus_count >= kConsensusRequired &&
-            options.show_on_sense_hat && display.available())
-          display.ShowGesture(cls, pred.confidence);
+        ++garbage_count;
+        if (garbage_count >= 2) { // require a couple garbage windows to reset consensus
+          prev_class      = -1;
+          consensus_count = 0;
+          garbage_count   = 0;
+          if (options.show_on_sense_hat && display.available())
+            display.Clear();
+        }
       } else {
-        prev_class      = cls;
-        consensus_count = 1;
+        garbage_count = 0;  // real gesture frame resets the garbage counter
+
+        if (cls == prev_class) {
+          ++consensus_count;
+          if (consensus_count >= kConsensusRequired) {
+            if (options.show_on_sense_hat && display.available())
+              display.ShowGesture(cls, pred.confidence);
+
+            // Flush the buffer after a confirmed gesture so the next
+            // gesture starts from clean data, not leftover motion samples.
+            buffer.clear();
+            samples_since_inference = 0;
+            prev_class              = -1;
+            consensus_count         = 0;
+            garbage_count           = 0;
+          }
+        } else {
+          prev_class      = cls;
+          consensus_count = 1;
+        }
       }
     }
 
