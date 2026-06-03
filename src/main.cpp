@@ -8,6 +8,7 @@
 
 #include "sense_hat_display.h"
 #include "tflite_gesture_classifier.h"
+#include "live_gesture_stream.h"
 
 namespace {
 
@@ -24,6 +25,7 @@ constexpr const char* kGestureLabels[kGestureNumClasses] = {"A", "B", "C", "?"};
 enum class ProgramMode {
   kGestureInference,
   kBenchmarkGestureModel,
+  kLiveStream,
 };
 
 struct ProgramOptions {
@@ -40,6 +42,7 @@ void PrintUsage(const char* program_name) {
       << "Usage:\n"
       << "  " << program_name << " --gesture --model model.tflite --csv test_gesture.csv\n"
       << "  " << program_name << " --benchmark --model model.tflite --csv test_gesture.csv --runs 100 --warmup 20\n";
+      << "  " << program_name << " --live --model model.tflite\n";
 }
 
 bool ParsePositiveInt(const std::string& text, int* value) {
@@ -98,6 +101,10 @@ bool ParseArgs(int argc, char** argv, ProgramOptions* options) {
     // Positional: treat bare argument as model path for backwards compat.
     if (!arg.empty() && arg[0] != '-') {
       options->model_path = arg;
+      continue;
+    }
+    if((arg == "--live")){
+      options->mode = ProgramMode::kLiveStream;
       continue;
     }
 
@@ -250,6 +257,16 @@ int main(int argc, char** argv) {
 
     case ProgramMode::kBenchmarkGestureModel:
       return RunGestureBenchmark(options, &classifier);
+
+    case ProgramMode::kLiveStream:
+      RunLiveStream(&classifier, [&](int gesture_index) {
+        std::cout << "Gesture: " << kGestureLabels[gesture_index] << "\n";
+        if (options.show_on_sense_hat) {
+          SenseHatDisplay display;
+          if (display.available())
+            display.ShowGesture(gesture_index, 1.0f);
+        }
+      });
   }
 
   return 1;
