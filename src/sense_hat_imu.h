@@ -16,11 +16,12 @@ struct ImuSample {
   float mag_x,   mag_y,   mag_z;
 };
 
-// Reads the Sense HAT IMU via the Linux IIO sysfs interface.
-// Searches for a known device name under /sys/bus/iio/devices/iio:deviceN/.
+// Reads the Sense HAT LSM9DS1 directly via /dev/i2c-1.
+// AG at 0x6A, magnetometer at 0x1C — confirmed by i2cdetect on the target Pi.
 class SenseHatImu {
  public:
   SenseHatImu();
+  ~SenseHatImu();
 
   bool available() const { return available_; }
   const std::string& error_message() const { return error_message_; }
@@ -29,15 +30,11 @@ class SenseHatImu {
   bool Read(ImuSample* sample);
 
  private:
-  bool FindDevice();
-  float ReadFloat(const std::string& path) const;
-  float ReadRawScaled(const std::string& raw_path, float scale) const;
+  bool InitDevice();
+  bool WriteReg(std::uint8_t addr, std::uint8_t reg, std::uint8_t val);
+  bool ReadRegs(std::uint8_t addr, std::uint8_t reg, std::uint8_t* buf, int len);
 
-  std::string device_path_;
-  float accel_scale_ = 1.0f;  // IIO raw -> m/s²
-  float gyro_scale_  = 1.0f;  // IIO raw -> rad/s
-  float mag_scale_   = 1.0f;  // IIO raw -> Gauss (converted to µT on Read)
-
+  int i2c_fd_ = -1;
   bool available_ = false;
   std::string error_message_;
 };

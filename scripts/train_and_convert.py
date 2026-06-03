@@ -171,8 +171,12 @@ def prune_neurons(
     dense1 = base_model.get_layer("dense1")
     output = base_model.get_layer("output")
 
-    d1_kernel, d1_bias = dense1.get_weights()
-    out_kernel, out_bias = output.get_weights()
+    d1_kernel = dense1.kernel.numpy()
+    d1_bias   = (dense1.bias.numpy() if dense1.bias is not None
+                 else np.zeros(d1_kernel.shape[1], dtype=np.float32))
+    out_kernel = output.kernel.numpy()
+    out_bias   = (output.bias.numpy() if output.bias is not None
+                  else np.zeros(output.units, dtype=np.float32))
 
     scores = np.sum(np.abs(d1_kernel), axis=0) + np.sum(np.abs(out_kernel), axis=1)
     keep = np.sort(np.argsort(scores)[-keep_count(d1_kernel.shape[1], prune_ratio):])
@@ -183,7 +187,9 @@ def prune_neurons(
 
     model = make_model(make_adapted_norm(norm_weights), conv.filters, len(keep))
     model(tf.zeros((1, kTimesteps, kFeatureCount)))
-    model.get_layer("conv").set_weights(conv.get_weights())
+    model.get_layer("conv").set_weights([conv.kernel.numpy(),
+                                         conv.bias.numpy() if conv.bias is not None
+                                         else np.zeros(conv.filters, dtype=np.float32)])
     model.get_layer("dense1").set_weights([d1_kernel, d1_bias])
     model.get_layer("output").set_weights([out_kernel, out_bias])
     return model
@@ -199,8 +205,15 @@ def prune_channels(
     dense1 = base_model.get_layer("dense1")
     output = base_model.get_layer("output")
 
-    conv_kernel, conv_bias = conv.get_weights()  # (kernel_size, in_features, filters)
-    d1_kernel, d1_bias = dense1.get_weights()    # (filters, dense_units)
+    # Use .kernel / .bias attributes directly - get_weights() ordering is unreliable
+    # when prune_channels is called on a model whose conv was set via set_weights()
+    # in a different TF/Keras build (the returned list can be [bias] instead of [kernel, bias]).
+    conv_kernel = conv.kernel.numpy()  # (kernel_size, in_features, filters)
+    conv_bias = (conv.bias.numpy() if conv.bias is not None
+                 else np.zeros(conv_kernel.shape[2], dtype=np.float32))
+    d1_kernel = dense1.kernel.numpy()  # (filters, dense_units)
+    d1_bias   = (dense1.bias.numpy() if dense1.bias is not None
+                 else np.zeros(d1_kernel.shape[1], dtype=np.float32))
 
     # Score each filter by combined kernel + downstream dense weight magnitude.
     conv_scores = np.sum(np.abs(conv_kernel), axis=(0, 1))  # (filters,)
@@ -217,7 +230,9 @@ def prune_channels(
     model(tf.zeros((1, kTimesteps, kFeatureCount)))
     model.get_layer("conv").set_weights([conv_kernel, conv_bias])
     model.get_layer("dense1").set_weights([d1_kernel, d1_bias])
-    model.get_layer("output").set_weights(output.get_weights())
+    model.get_layer("output").set_weights([output.kernel.numpy(),
+                                            output.bias.numpy() if output.bias is not None
+                                            else np.zeros(output.units, dtype=np.float32)])
     return model
 
 
@@ -690,26 +705,22 @@ def main() -> int:
             combined_metrics["compression_ratio"],
         )
 
-    # Added Ex 05: Combining Neuron Pruning, Channel Pruning and Int8 Quantization 
-    neuron_then_channel = prune_channels(neuron, args.channel_prune_ratio, norm_weights)
-    finetune(neuron_then_channel, X_train, y_train, args.finetune_epochs, args.batch_size)
+    # Ex 05 Part 1: Fully optimised model - channel pruning + neuron pruning + INT8.
+    # Channel pruning is applied first (reusing the already-trained `channel` model),
+    # then neuron pruning is applied on top, and the result is exported as INT8.
+    optimized = prune_neurons(channel, args.neuron_prune_ratio, norm_weights)
+    finetune(optimized, X_train, y_train, args.finetune_epochs, args.batch_size)
 
-    channel_then_neuron = prune_neurons(channel, args.neuron_prune_ratio, norm_weights)
-    finetune(channel_then_neuron, X_train, y_train, args.finetune_epochs, args.batch_size)
-
-    for source_name, source_model in [
-        ("neuron_then_channel_pruned", neuron_then_channel),
-        ("channel_then_neuron_pruned", channel_then_neuron),
-    ]:
-        append_model(
-            models,
-            f"{source_name}_int8",
-            "neuron + channel pruning + INT8 TFLite export",
-            source_model,
-            "int8",
-            None,
-            None,
-        )
+    optimized_int8_metrics = linear_int8_metrics(optimized)
+    append_model(
+        models,
+        "optimized_int8",
+        "channel + neuron pruning + INT8 TFLite export",
+        optimized,
+        "int8",
+        optimized_int8_metrics["mae"],
+        optimized_int8_metrics["compression_ratio"],
+    )
 
     # Export all model variants.
     rows: list[dict[str, Any]] = []
@@ -751,7 +762,7 @@ def main() -> int:
             f"tflite_acc={tflite_metrics[1]:.4f}"
         )
 
-    # baseline.tflite → model.tflite for backward compatibility with deploy scripts.
+    # baseline.tflite -> model.tflite for backward compatibility with deploy scripts.
     shutil.copy2(artifacts_dir / "baseline.tflite", artifacts_dir / "model.tflite")
 
     metrics_path = artifacts_dir / "model_metrics.csv"
