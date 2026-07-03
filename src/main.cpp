@@ -33,7 +33,6 @@ constexpr int kConsensusRequired = 3;   // consecutive same-class windows to con
 constexpr int kPollIntervalMs    = 60;  // IMU poll rate (matches training data recording rate)
 
 constexpr int kGarbageClass = 3;
-
 constexpr const char* kGestureLabels[kGestureNumClasses] = {"A", "B", "C", "?"};
 
 // shutdown for stream mode.
